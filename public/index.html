@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pushforge POC</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #0f0f0f; color: #e0e0e0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 32px; width: 100%; max-width: 520px; }
+    h1 { font-size: 18px; margin-bottom: 4px; color: #fff; }
+    .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 3px; background: #7c3aed; color: #fff; margin-bottom: 24px; }
+    .status { background: #111; border: 1px solid #333; border-radius: 4px; padding: 12px 16px; font-size: 13px; margin-bottom: 20px; min-height: 48px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+    .status.success { border-color: #22c55e; color: #22c55e; }
+    .status.error { border-color: #ef4444; color: #ef4444; }
+    .status.info { border-color: #60a5fa; color: #60a5fa; }
+    .actions { display: flex; flex-direction: column; gap: 8px; }
+    button { padding: 10px 16px; border: 1px solid #444; border-radius: 4px; background: #222; color: #e0e0e0; font-family: monospace; font-size: 13px; cursor: pointer; text-align: left; transition: background 0.15s; }
+    button:hover { background: #2a2a2a; border-color: #666; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { border-color: #7c3aed; color: #a78bfa; }
+    button.danger { border-color: #7f1d1d; color: #ef4444; }
+    .sep { border: none; border-top: 1px solid #222; margin: 16px 0; }
+    .info-row { font-size: 11px; color: #555; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>pushforge POC</h1>
+    <span class="badge">Web Crypto API · zero deps · edge-safe</span>
+    <div id="status" class="status">Initializing...</div>
+    <div class="actions">
+      <button class="primary" id="btn-subscribe" onclick="subscribe()" disabled>Subscribe to push</button>
+      <button class="primary" id="btn-send" onclick="sendNotification()" disabled>Send test notification</button>
+      <hr class="sep">
+      <button class="danger" id="btn-unsub" onclick="unsubscribe()" disabled>Unsubscribe</button>
+    </div>
+    <div class="info-row" id="info"></div>
+  </div>
+
+  <script>
+    let swReg = null;
+
+    function log(msg, type = '') {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = 'status ' + type;
+    }
+
+    function setInfo(msg) {
+      document.getElementById('info').textContent = msg;
+    }
+
+    async function init() {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        log('Push notifications not supported in this browser.', 'error');
+        return;
+      }
+      try {
+        swReg = await navigator.serviceWorker.register('/sw.js');
+        await navigator.serviceWorker.ready;
+        const existing = await swReg.pushManager.getSubscription();
+        if (existing) {
+          log('Already subscribed. Ready to send.', 'success');
+          document.getElementById('btn-send').disabled = false;
+          document.getElementById('btn-unsub').disabled = false;
+          setInfo('endpoint: ' + existing.endpoint.substring(0, 60) + '...');
+        } else {
+          log('Service worker ready. Click Subscribe.', 'info');
+          document.getElementById('btn-subscribe').disabled = false;
+        }
+      } catch (err) {
+        log('SW registration failed: ' + err.message, 'error');
+      }
+    }
+
+    async function subscribe() {
+      try {
+        log('Fetching VAPID key...', 'info');
+        const { key } = await fetch('/api/vapid-public-key').then(r => r.json());
+
+        log('Requesting push permission...', 'info');
+        const subPromise = swReg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: key,
+        });
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Timed out — browser cannot reach push service. Check network or try Firefox.')), 12000)
+        );
+        const sub = await Promise.race([subPromise, timeoutPromise]);
+
+        log('Sending subscription to server...', 'info');
+        await fetch('/api/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sub),
+        });
+
+        log('Subscribed successfully!', 'success');
+        setInfo('endpoint: ' + sub.endpoint.substring(0, 60) + '...');
+        document.getElementById('btn-subscribe').disabled = true;
+        document.getElementById('btn-send').disabled = false;
+        document.getElementById('btn-unsub').disabled = false;
+      } catch (err) {
+        log('Subscribe failed: ' + err.message, 'error');
+      }
+    }
+
+    async function sendNotification() {
+      try {
+        log('Sending notification...', 'info');
+        const res = await fetch('/api/send', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          log(`Notification sent! (sent: ${data.sent}, failed: ${data.failed})`, 'success');
+        } else {
+          log('Send failed: ' + data.error, 'error');
+        }
+      } catch (err) {
+        log('Send error: ' + err.message, 'error');
+      }
+    }
+
+    async function unsubscribe() {
+      try {
+        const sub = await swReg.pushManager.getSubscription();
+        if (!sub) { log('No active subscription.', 'error'); return; }
+        await fetch('/api/subscribe', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint: sub.endpoint }),
+        });
+        await sub.unsubscribe();
+        log('Unsubscribed.', 'info');
+        setInfo('');
+        document.getElementById('btn-subscribe').disabled = false;
+        document.getElementById('btn-send').disabled = true;
+        document.getElementById('btn-unsub').disabled = true;
+      } catch (err) {
+        log('Unsubscribe error: ' + err.message, 'error');
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

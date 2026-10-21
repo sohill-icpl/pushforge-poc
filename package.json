@@ -1,0 +1,13 @@
+{
+  "name": "poc-pushforge",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "generate-keys": "node generate-keys.js",
+    "start": "node --env-file=.env server.js"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0",
+    "@pushforge/builder": "2.0.5"
+  }
+}
